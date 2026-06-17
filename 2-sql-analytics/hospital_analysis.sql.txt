@@ -1,0 +1,142 @@
+-- =====================================================================
+-- Australian Public Hospital Performance — SQL Analytics
+-- Database: hospital_analytics.db (SQLite)
+-- Source:   ROGS 2026 Public Hospitals dataset (Productivity Commission)
+-- Author:   <your name>
+-- =====================================================================
+-- This script demonstrates analytical SQL from foundational aggregation
+-- through to advanced window functions and CTEs, each answering a real
+-- healthcare performance question.
+-- =====================================================================
+
+
+-- ---------------------------------------------------------------------
+-- Query 1: Data inventory — record count by measure
+-- Business question: What measures are available in the dataset, and
+--                    how well covered is each one?
+-- Concepts: GROUP BY, COUNT, ORDER BY
+-- ---------------------------------------------------------------------
+SELECT 
+    Measure,
+    COUNT(*) AS record_count
+FROM fact_hospital_performance
+GROUP BY Measure
+ORDER BY record_count DESC;
+
+
+-- ---------------------------------------------------------------------
+-- Query 2: National ED 4-hour completion trend by year
+-- Business question: How has the percentage of ED patients completing
+--                    their visit within 4 hours changed over time?
+-- Concepts: WHERE (multiple conditions), AVG, ROUND, GROUP BY
+-- Finding: Fell from 70.4% (2015-16) to 53.0% (2024-25).
+-- ---------------------------------------------------------------------
+SELECT 
+    Year,
+    ROUND(AVG(Value), 1) AS avg_pct_within_4hrs
+FROM fact_hospital_performance
+WHERE Measure = 'Patients staying for four hours or less'
+  AND Description3 = 'ED stay length is within four hours'
+  AND Unit = '%'
+GROUP BY Year
+ORDER BY Year;
+
+
+-- ---------------------------------------------------------------------
+-- Query 3: Performance status flags by year
+-- Business question: For each year, is ED performance On Target, a
+--                    Concern, or Critical?
+-- Concepts: CASE statement (conditional business logic)
+-- Finding: Only 2015-16 was On Target; 2021-22 onward is Critical.
+-- ---------------------------------------------------------------------
+SELECT 
+    Year,
+    ROUND(AVG(Value), 1) AS avg_pct,
+    CASE 
+        WHEN AVG(Value) >= 70 THEN 'On Target'
+        WHEN AVG(Value) >= 60 THEN 'Concern'
+        ELSE 'Critical'
+    END AS performance_status
+FROM fact_hospital_performance
+WHERE Measure = 'Patients staying for four hours or less'
+  AND Description3 = 'ED stay length is within four hours'
+  AND Unit = '%'
+GROUP BY Year
+ORDER BY Year;
+
+
+-- ---------------------------------------------------------------------
+-- Query 4: Year-on-year change in ED performance
+-- Business question: How much did the ED 4-hour rate change from one
+--                    year to the next?
+-- Concepts: Window function LAG, OVER (ORDER BY ...)
+-- Finding: Sharpest drops in 2021-22 (-5.2) and 2022-23 (-4.1).
+-- ---------------------------------------------------------------------
+SELECT 
+    Year,
+    ROUND(AVG(Value), 1) AS avg_pct,
+    ROUND(
+        AVG(Value) - LAG(AVG(Value)) OVER (ORDER BY Year),
+        1
+    ) AS change_from_prev_year
+FROM fact_hospital_performance
+WHERE Measure = 'Patients staying for four hours or less'
+  AND Description3 = 'ED stay length is within four hours'
+  AND Unit = '%'
+GROUP BY Year
+ORDER BY Year;
+
+
+-- ---------------------------------------------------------------------
+-- Query 5: State performance leaderboard, 2024-25
+-- Business question: Which states performed best and worst on the ED
+--                    4-hour target in the latest year?
+-- Concepts: Window function RANK, OVER (ORDER BY ... DESC)
+-- Finding: ACT ranked 1st (60.8%); Tasmania last (47.5%).
+-- ---------------------------------------------------------------------
+SELECT 
+    StateName,
+    ROUND(AVG(Value), 1) AS avg_pct,
+    RANK() OVER (ORDER BY AVG(Value) DESC) AS performance_rank
+FROM fact_hospital_performance
+WHERE Measure = 'Patients staying for four hours or less'
+  AND Description3 = 'ED stay length is within four hours'
+  AND Unit = '%'
+  AND Year = '2024-25'
+  AND State NOT IN ('Total', 'Aust')
+GROUP BY StateName
+ORDER BY performance_rank;
+
+
+-- ---------------------------------------------------------------------
+-- Query 6: States below the national average, 2024-25
+-- Business question: Which states fell below the national average ED
+--                    4-hour completion rate, and by how much?
+-- Concepts: CTEs (WITH), chained CTEs, CROSS JOIN
+-- Finding: Four states below average; Tasmania -5.5 points.
+-- ---------------------------------------------------------------------
+WITH state_averages AS (
+    SELECT 
+        StateName,
+        AVG(Value) AS state_avg
+    FROM fact_hospital_performance
+    WHERE Measure = 'Patients staying for four hours or less'
+      AND Description3 = 'ED stay length is within four hours'
+      AND Unit = '%'
+      AND Year = '2024-25'
+      AND State NOT IN ('Total', 'Aust')
+    GROUP BY StateName
+),
+national AS (
+    SELECT AVG(state_avg) AS national_avg
+    FROM state_averages
+)
+SELECT 
+    s.StateName,
+    ROUND(s.state_avg, 1) AS state_avg,
+    ROUND(n.national_avg, 1) AS national_avg,
+    ROUND(s.state_avg - n.national_avg, 1) AS gap
+FROM state_averages s
+CROSS JOIN national n
+WHERE s.state_avg < n.national_avg
+ORDER BY gap;
